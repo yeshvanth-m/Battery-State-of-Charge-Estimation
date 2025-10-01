@@ -122,14 +122,14 @@ def c_float_array(name, arr, values_per_line=8, indent="    "):
         lines = []
         flat = arr.ravel()
         for i in range(0, flat.size, values_per_line):
-            chunk = ", ".join(f"{v:.9g}f" for v in flat[i:i+values_per_line])
+            chunk = ", ".join(f"{v:.9g}" for v in flat[i:i+values_per_line])
             lines.append(indent + chunk)
         return f"float {name}[{flat.size}] = {{\n" + ",\n".join(lines) + "\n};\n"
     elif arr.ndim == 2:
         rows, cols = arr.shape
         lines = [f"float {name}[{rows}][{cols}] = {{"]
         for r in range(rows):
-            row_vals = ", ".join(f"{v:.9g}f" for v in arr[r])
+            row_vals = ", ".join(f"{v:.9g}" for v in arr[r])
             lines.append(indent + "{" + row_vals + "}" + ("," if r != rows - 1 else ""))
         lines.append("};\n")
         return "\n".join(lines)
