@@ -8,7 +8,6 @@
 #include "scaler_with_rows.h"
 
 #define NUM_INPUTS          5
-#define FEATURE_SIZE        10
 #define NEURONS_LAYER_1     128
 #define NEURONS_LAYER_2     64
 #define NUM_OUTPUTS         1
@@ -73,7 +72,45 @@ FeedForwardNN FCN =
     .biases_output = {0.516276464685792}
 };
  */
-static inline float relu(float x) { return x > 0.f ? x : 0.f; }
+// helper relu for float
+static inline float relu_f(float x) { return x > 0.0f ? x : 0.0f; }
+
+// helper relu for fixed Q (Q1.3.27)
+static inline int32_t relu_q(int32_t x) { return x > 0 ? x : 0; }
+
+// convert float -> signed Q with frac_bits fractional bits, saturate to int32
+static inline int32_t float_to_q(float v, int frac_bits)
+{
+    // multiplication in 64-bit to avoid overflow for large shift amounts
+    int64_t scale = (int64_t)1 << frac_bits;
+    int64_t tmp = (int64_t) llroundf(v * (double)scale);
+
+    if (tmp > INT32_MAX) return INT32_MAX;
+    if (tmp < INT32_MIN) return INT32_MIN;
+    return (int32_t)tmp;
+}
+
+// convert signed Q -> float
+static inline float q_to_float(int32_t qv, int frac_bits)
+{
+    return (float)qv / (float)((int64_t)1 << frac_bits);
+}
+
+float min_input = __FLT_MAX__, max_input = __FLT_MIN__, min_weight = __FLT_MAX__, max_weight = __FLT_MIN__, 
+min_bias = __FLT_MAX__, max_bias = __FLT_MIN__;
+
+/*
+ Q formats used:
+ - input:  Q1.2.13  -> frac_bits = 13
+ - weight: Q1.1.14  -> frac_bits = 14
+ - acc:    Q1.3.27  -> frac_bits = 27
+ - bias:   Q1.3.27  -> frac_bits = 27
+*/
+
+// Example: external functions/data expected by your code (placeholders)
+// extern float FCN_L1_W[][NUM_INPUTS];
+// extern float FCN_L1_b[];
+// etc.
 
 void fcn_layer(const float *input,
                const float *weights,   // row-major: [num_neurons][input_size]
@@ -81,8 +118,10 @@ void fcn_layer(const float *input,
                uint32_t num_neurons,
                uint32_t input_size,
                float *output,
+               int32_t *output_i,
                int apply_relu)
 {
+    // Perform floating point matrix-vector multiplication and add biases
     for (uint32_t i = 0; i < num_neurons; i++) 
     {
         const float *wrow = &weights[i * input_size];   // <-- correct stride
@@ -91,60 +130,157 @@ void fcn_layer(const float *input,
         {
             acc += input[j] * wrow[j];
         }
-        output[i] = apply_relu ? relu(acc) : acc;
+        output[i] = apply_relu ? relu_f(acc) : acc;
         //printf(" Neuron %2d: Weighted sum: %f, Output: %f\n", i, acc, output[i]);
+    }
+
+    // Perform fixed point matrix-vector multiplication and add biases
+    for (uint32_t i = 0; i < num_neurons; i++) 
+    {
+        const float *wrow = &weights[i * input_size];   // <-- correct stride
+        
+        int32_t acc;
+
+        if (biases[i] > max_bias) max_bias = biases[i];
+        if (biases[i] < min_bias) min_bias = biases[i];
+        /*
+        if (biases[i] < 0)
+        {
+            acc = (1 << 32) | (int32_t)((-1 * biases[i]) * (1 << 14)); // Q2.14
+        }
+        else
+        {
+            acc = (int32_t)(biases[i] * (1 << 14)); // Q2.14
+        } */
+
+        for (uint32_t j = 0; j < input_size; j++) 
+        {
+            if (input[j] > max_input) max_input = input[j];
+            if (input[j] < min_input) min_input = input[j];
+            if (weights[j] > max_weight) max_weight = weights[j];
+            if (weights[j] < min_weight) min_weight = weights[j];
+
+        }
+        //printf(" Neuron %2d: Weighted sum: %f, Output: %f\n", i, acc, output[i]);
+    }
+
+    // Perform fixed point conversion matrix-vector multiplication and add biases 
+    // Q map:
+    // input  -> Q1.2.13  (frac_bits_in  = 13)
+    // weight -> Q1.1.14  (frac_bits_wt  = 14)
+    // product (input*weight) -> Q1.3.27 (13+14 = 27 fractional bits)
+    // accumulator & bias -> Q1.3.27 (frac_bits_acc = 27)
+
+    const int frac_bits_in  = 13;
+    const int frac_bits_wt  = 14;
+    const int frac_bits_acc = 27; // product fractional bits
+
+    // Option A: convert whole input vector to fixed once (recommended)
+    // allocate temporary buffer for inputs in fixed Q1.2.13
+    // NOTE: if input_size is large, consider static/stack allocation limits.
+    int32_t input_q[input_size];
+    for (uint32_t j = 0; j < input_size; ++j) {
+        input_q[j] = float_to_q(input[j], frac_bits_in);
+    }
+
+    // Now process each neuron
+    for (uint32_t i = 0; i < num_neurons; i++) 
+    {
+        const float *wrow = &weights[i * input_size];   // <-- correct stride
+
+        // convert bias to Q1.3.27
+        int32_t bias_q = float_to_q(biases[i], frac_bits_acc);
+
+        // initialize accumulator in 64-bit using bias (Q1.3.27)
+        int64_t acc = (int64_t)bias_q;
+
+        // For each input: multiply input_q (Q1.2.13) * weight_q (Q1.1.14)
+        // product has frac_bits = 13 + 14 = 27 -> already aligned with acc Q1.3.27
+        for (uint32_t j = 0; j < input_size; j++) 
+        {
+            int32_t w_q = float_to_q(wrow[j], frac_bits_wt);       // Q1.1.14
+            // multiply in 64-bit to avoid overflow: (int64_t) * (int64_t)
+            int64_t prod = (int64_t)input_q[j] * (int64_t)w_q;    // result is Q1.3.27
+            acc += prod;
+        }
+
+        // saturate acc into int32 (the accumulator format is Q1.3.27 stored in int32)
+        if (acc > INT32_MAX) {
+            output_i[i] = INT32_MAX;
+        } else if (acc < INT32_MIN) {
+            output_i[i] = INT32_MIN;
+        } else {
+            output_i[i] = (int32_t)acc;
+        }
+
+        // apply ReLU in fixed domain if requested
+        if (apply_relu) {
+            output_i[i] = relu_q(output_i[i]);
+        }
     }
 }
 
+/*
 void CnnForwardPass (const float *input, const FeedForwardNN *nn, float *output_scalar)
 {
     float layer_1[NEURONS_LAYER_1];
     float layer_2[NEURONS_LAYER_2];
 
     fcn_layer(input,  &nn->weights_layer_1[0][0], nn->biases_layer_1,
-              NEURONS_LAYER_1, NUM_INPUTS, layer_1, /*ReLU*/1);
+              NEURONS_LAYER_1, NUM_INPUTS, layer_1, 1);
 
     fcn_layer(layer_1, &nn->weights_layer_2[0][0], nn->biases_layer_2,
-              NEURONS_LAYER_2, NEURONS_LAYER_1, layer_2, /*ReLU*/1);
+              NEURONS_LAYER_2, NEURONS_LAYER_1, layer_2, 1);
 
     float out1[NUM_OUTPUTS];
     fcn_layer(layer_2, &nn->weights_output[0][0], nn->biases_output,
-              NUM_OUTPUTS, NEURONS_LAYER_2, out1, /*ReLU*/0);   // <-- linear
+              NUM_OUTPUTS, NEURONS_LAYER_2, out1, 0);   // <-- linear
     *output_scalar = out1[0];
-}
+} */
 
-void DnnForwardPass (const float *input, float *output_scalar)
+void DnnForwardPass (const float *input, float *output_scalar, int32_t *output)
 {
     float layer_1[NEURONS_LAYER_1];
     float layer_2[NEURONS_LAYER_2];
 
+    int32_t layer_1_i[NEURONS_LAYER_1];
+    int32_t layer_2_i[NEURONS_LAYER_2];
+
     fcn_layer(input,  &FCN_L1_W[0][0], FCN_L1_b,
-              NEURONS_LAYER_1, NUM_INPUTS, layer_1, /*ReLU*/1);
+              NEURONS_LAYER_1, NUM_INPUTS, layer_1, layer_1_i, /*ReLU*/1);
 
     fcn_layer(layer_1, &FCN_L2_W[0][0], FCN_L2_b,
-              NEURONS_LAYER_2, NEURONS_LAYER_1, layer_2, /*ReLU*/1);
+              NEURONS_LAYER_2, NEURONS_LAYER_1, layer_2, layer_2_i,/*ReLU*/1);
 
     float out1[NUM_OUTPUTS];
+    int32_t out1_i[NUM_OUTPUTS];
+
     fcn_layer(layer_2, &FCN_OUT_W[0][0], FCN_OUT_b,
-              NUM_OUTPUTS, NEURONS_LAYER_2, out1, /*ReLU*/0);   // <-- linear
+              NUM_OUTPUTS, NEURONS_LAYER_2, out1, out1_i, /*ReLU*/0);   // <-- linear
+    
     *output_scalar = out1[0];
+    *output = out1_i[0];
 }
 
 // Example usage
 int main() 
 {
     float output;
-    float row[FEATURE_SIZE];
+    int32_t output_i;
+    float row[FEATURE_COUNT];
     float input[NUM_INPUTS];
     FILE *fp = fopen("predictions.csv", "w");
     if (!fp) { perror("predictions.csv"); return 1; }
+    float acc_error = 0.0f;
+    float error = 0.0f;
 
     for (uint32_t i = 0; i < ROW_COUNT; i++) 
     {
         //uint32_t i = 0;
         output = 0.0;
+        output_i = 0;
         //memcpy(&input, &test_inputs[i], sizeof(test_inputs[i]));
-        memcpy(&row, &NORMALIZED_DATA[i], FEATURE_SIZE * sizeof(float));
+        memcpy(&row, &NORMALIZED_DATA[i], FEATURE_COUNT * sizeof(float));
         //printf("Input: Voltage: %f, Current: %f, Temp: %f, V_Avg: %f, I_Avg: %f\n", 
         //       input[0], input[1], input[2], input[3], input[4]);
         //printf("Input: Voltage: %f, Current: %f, Temp: %f, Capacity: %f, Cum Capacity: %f\n", 
@@ -154,10 +290,19 @@ int main()
         }
         input[4] = row[7]; // Cum Capacity
         //CnnForwardPass(input, &FCN, &output);
-        DnnForwardPass(input, &output);
-        printf("Output: %f\n", output);
+        DnnForwardPass(input, &output, &output_i);
+        //printf("Output: %f\n", output);
+        //printf("Output (fixed Q1.3.27): %d -> %f\n", output_i, q_to_float(output_i, 27));
+        error = fabsf(output - q_to_float(output_i, 27));
+        acc_error += error;
         // write one CSV row
-        fprintf(fp, "%.6f\n", output);
+        fprintf(fp, "%.6f, %.6f, %.6f\n", output, q_to_float(output_i, 27), error);
     }
+
+    printf("Average absolute error: %.6f\n", acc_error / ROW_COUNT);
+    fclose(fp);
+    //printf("Max input: %f, Min input: %f\n", max_input, min_input);
+    //printf("Max weight: %f, Min weight: %f\n", max_weight, min_weight);
+    //printf("Max bias: %f, Min bias: %f\n", max_bias, min_bias);
     return 0;
 }
