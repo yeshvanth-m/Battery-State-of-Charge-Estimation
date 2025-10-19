@@ -195,28 +195,22 @@ void fcn_layer(const float *input,
         int32_t bias_q = float_to_q(biases[i], frac_bits_acc);
 
         // initialize accumulator in 64-bit using bias (Q1.3.27)
-        int64_t acc = (int64_t)bias_q;
+        int32_t acc = bias_q;
 
         // For each input: multiply input_q (Q1.2.13) * weight_q (Q1.1.14)
         // product has frac_bits = 13 + 14 = 27 -> already aligned with acc Q1.3.27
         for (uint32_t j = 0; j < input_size; j++) 
         {
-            int32_t w_q = float_to_q(wrow[j], frac_bits_wt);       // Q1.1.14
+            int16_t w_q = (int16_t)float_to_q(wrow[j], frac_bits_wt);       // Q1.1.14
             // multiply in 64-bit to avoid overflow: (int64_t) * (int64_t)
-            int64_t prod = (int64_t)input_q[j] * (int64_t)w_q;    // result is Q1.3.27
+            int32_t prod = (int32_t)(input_q[j] * w_q);    // result is Q1.3.27
             acc += prod;
         }
         
         if (acc > max_acc) max_acc = (int32_t)acc;
         if (acc < min_acc) min_acc = (int32_t)acc;
         // saturate acc into int32 (the accumulator format is Q1.3.27 stored in int32)
-        if (acc > INT32_MAX) {
-            output_i[i] = INT32_MAX;
-        } else if (acc < INT32_MIN) {
-            output_i[i] = INT32_MIN;
-        } else {
-            output_i[i] = (int32_t)acc;
-        }
+        output_i[i] = (int32_t)acc;
 
         // apply ReLU in fixed domain if requested
         if (apply_relu) {
@@ -851,10 +845,10 @@ int main()
     emit_mem_files_and_wrapper("fcn");
 
     fclose(fp);
-    //printf("Max input: %f, Min input: %f\n", max_input, min_input);
-    //printf("Max weight: %f, Min weight: %f\n", max_weight, min_weight);
-    //printf("Max bias: %f, Min bias: %f\n", max_bias, min_bias);
-    //printf("Max acc: %.6f, Min acc: %.6f\n", q_to_float(max_acc, 27), q_to_float(min_acc, 27));
+    printf("Max input: %f, Min input: %f\n", max_input, min_input);
+    printf("Max weight: %f, Min weight: %f\n", max_weight, min_weight);
+    printf("Max bias: %f, Min bias: %f\n", max_bias, min_bias);
+    printf("Max acc: %.6f, Min acc: %.6f\n", q_to_float(max_acc, 27), q_to_float(min_acc, 27));
     
     fclose(fpwb);
     return 0;
