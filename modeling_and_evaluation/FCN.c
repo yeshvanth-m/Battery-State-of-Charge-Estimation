@@ -102,6 +102,9 @@ static inline float q_to_float(int32_t qv, int frac_bits)
 float min_input = __FLT_MAX__, max_input = __FLT_MIN__, min_weight = __FLT_MAX__, max_weight = __FLT_MIN__, 
 min_bias = __FLT_MAX__, max_bias = __FLT_MIN__;
 
+int32_t max_acc = INT32_MIN;
+int32_t min_acc = INT32_MAX;
+
 /*
  Q formats used:
  - input:  Q1.2.13  -> frac_bits = 13
@@ -116,7 +119,7 @@ min_bias = __FLT_MAX__, max_bias = __FLT_MIN__;
 // etc.
 
 void fcn_layer(const float *input,
-               int32_t *input_q,
+               int16_t *input_q,
                const float *weights,   // row-major: [num_neurons][input_size]
                const float *biases,
                uint32_t num_neurons,
@@ -203,7 +206,9 @@ void fcn_layer(const float *input,
             int64_t prod = (int64_t)input_q[j] * (int64_t)w_q;    // result is Q1.3.27
             acc += prod;
         }
-
+        
+        if (acc > max_acc) max_acc = (int32_t)acc;
+        if (acc < min_acc) min_acc = (int32_t)acc;
         // saturate acc into int32 (the accumulator format is Q1.3.27 stored in int32)
         if (acc > INT32_MAX) {
             output_i[i] = INT32_MAX;
@@ -713,6 +718,34 @@ void CnnForwardPass (const float *input, const FeedForwardNN *nn, float *output_
               NUM_OUTPUTS, NEURONS_LAYER_2, out1, 0);   // <-- linear
     *output_scalar = out1[0];
 } */
+/* Convert a single value */
+/* Convert single Q1.4.27 (int32_t) -> Q1.2.13 (int16_t)
+   Round-to-nearest (ties away from zero), saturate.
+*/
+static inline int16_t q14_27_to_q2_13_safe(int32_t src_q14_27)
+{
+    const int SHIFT = 27 - 13;               // 14
+    const int64_t ROUND = 1LL << (SHIFT - 1); // 1 << 13
+
+    /* widen to avoid overflow & to preserve sign when shifting */
+    int64_t tmp = (int64_t) src_q14_27;
+
+    /* sign-aware rounding: add for positive, subtract for negative */
+    if (tmp >= 0) tmp += ROUND;
+    else          tmp -= ROUND;
+
+    /* arithmetic right shift on signed 64-bit (preserves sign) */
+    tmp = tmp >> SHIFT;
+
+    /* saturate to signed 16-bit range (Q1.2.13 fits in int16_t) */
+    const int64_t TGT_MIN = (int64_t)INT16_MIN; /* -32768 */
+    const int64_t TGT_MAX = (int64_t)INT16_MAX; /* +32767 */
+
+    if (tmp < TGT_MIN) tmp = TGT_MIN;
+    if (tmp > TGT_MAX) tmp = TGT_MAX;
+
+    return (int16_t) tmp;
+}
 
 void DnnForwardPass (const float *input, float *output_scalar, int32_t *output)
 {
@@ -722,32 +755,35 @@ void DnnForwardPass (const float *input, float *output_scalar, int32_t *output)
     int32_t layer_1_i[NEURONS_LAYER_1];
     int32_t layer_2_i[NEURONS_LAYER_2];
     
+    int16_t layer_1_o[NEURONS_LAYER_1];
+    int16_t layer_2_o[NEURONS_LAYER_2];
+
     const int frac_bits_in  = 13;
     const int frac_bits_wt  = 14;
 
-    int32_t input_q[NUM_INPUTS];
+    int16_t input_q[NUM_INPUTS];
     for (uint32_t j = 0; j < NUM_INPUTS; ++j) {
-        input_q[j] = float_to_q(input[j], frac_bits_in);
+        input_q[j] = (int16_t)float_to_q(input[j], frac_bits_in);
     }
 
     fcn_layer(input, input_q, &FCN_L1_W[0][0], FCN_L1_b,
               NEURONS_LAYER_1, NUM_INPUTS, layer_1, layer_1_i, /*ReLU*/1);
     
     for (uint32_t j = 0; j < NEURONS_LAYER_1; ++j) {
-        layer_1_i[j] = layer_1_i[j] >> frac_bits_wt; // adjust Q format for next layer input
+        layer_1_o[j] = q14_27_to_q2_13_safe(layer_1_i[j]); // adjust Q format for next layer input
     }
 
-    fcn_layer(layer_1, layer_1_i, &FCN_L2_W[0][0], FCN_L2_b,
+    fcn_layer(layer_1, layer_1_o, &FCN_L2_W[0][0], FCN_L2_b,
               NEURONS_LAYER_2, NEURONS_LAYER_1, layer_2, layer_2_i,/*ReLU*/1);
 
     for (uint32_t j = 0; j < NEURONS_LAYER_2; ++j) {
-        layer_2_i[j] = layer_2_i[j] >> frac_bits_wt; // adjust Q format for next layer input
+        layer_2_o[j] = q14_27_to_q2_13_safe(layer_2_i[j]); // adjust Q format for next layer input
     }
 
     float out1[NUM_OUTPUTS];
     int32_t out1_i[NUM_OUTPUTS];
 
-    fcn_layer(layer_2, layer_2_i, &FCN_OUT_W[0][0], FCN_OUT_b,
+    fcn_layer(layer_2, layer_2_o, &FCN_OUT_W[0][0], FCN_OUT_b,
               NUM_OUTPUTS, NEURONS_LAYER_2, out1, out1_i, /*ReLU*/0);   // <-- linear
     
     *output_scalar = out1[0];
@@ -818,5 +854,8 @@ int main()
     //printf("Max input: %f, Min input: %f\n", max_input, min_input);
     //printf("Max weight: %f, Min weight: %f\n", max_weight, min_weight);
     //printf("Max bias: %f, Min bias: %f\n", max_bias, min_bias);
+    //printf("Max acc: %.6f, Min acc: %.6f\n", q_to_float(max_acc, 27), q_to_float(min_acc, 27));
+    
+    fclose(fpwb);
     return 0;
 }
