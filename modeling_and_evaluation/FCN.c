@@ -6,6 +6,7 @@
 #include "test_data.h"
 #include "soc_fcn_weights.h"
 #include "scaler_with_rows.h"
+#include <inttypes.h>
 
 #define NUM_INPUTS          5
 #define NEURONS_LAYER_1     128
@@ -23,6 +24,8 @@ typedef struct
     float biases_layer_2[NEURONS_LAYER_2];
     float biases_output[NUM_OUTPUTS];
 } FeedForwardNN;
+
+FILE *fpwb;
 
 /*
 FeedForwardNN FCN = 
@@ -113,6 +116,7 @@ min_bias = __FLT_MAX__, max_bias = __FLT_MIN__;
 // etc.
 
 void fcn_layer(const float *input,
+               int32_t *input_q,
                const float *weights,   // row-major: [num_neurons][input_size]
                const float *biases,
                uint32_t num_neurons,
@@ -178,10 +182,6 @@ void fcn_layer(const float *input,
     // Option A: convert whole input vector to fixed once (recommended)
     // allocate temporary buffer for inputs in fixed Q1.2.13
     // NOTE: if input_size is large, consider static/stack allocation limits.
-    int32_t input_q[input_size];
-    for (uint32_t j = 0; j < input_size; ++j) {
-        input_q[j] = float_to_q(input[j], frac_bits_in);
-    }
 
     // Now process each neuron
     for (uint32_t i = 0; i < num_neurons; i++) 
@@ -220,6 +220,482 @@ void fcn_layer(const float *input,
     }
 }
 
+void export_weights_biases()
+{
+ 
+    // Perform fixed point conversion matrix-vector multiplication and add biases 
+    // Q map:
+    // input  -> Q1.2.13  (frac_bits_in  = 13)
+    // weight -> Q1.1.14  (frac_bits_wt  = 14)
+    // product (input*weight) -> Q1.3.27 (13+14 = 27 fractional bits)
+    // accumulator & bias -> Q1.3.27 (frac_bits_acc = 27)
+
+    const int frac_bits_in  = 13;
+    const int frac_bits_wt  = 14;
+    const int frac_bits_acc = 27; // product fractional bits
+
+    // Option A: convert whole input vector to fixed once (recommended)
+    // allocate temporary buffer for inputs in fixed Q1.2.13
+    // NOTE: if input_size is large, consider static/stack allocation limits.
+    for (uint32_t i = 0; i < FCN_L1_OUT; i++) 
+    {
+        for (uint32_t j = 0; j < FCN_L1_IN; j++) 
+        {
+            int32_t w_q = float_to_q(FCN_L1_W[i][j], frac_bits_wt);       // Q1.1.14
+            fprintf(fpwb, "%x\n", w_q);
+        }
+    }
+
+    for (uint32_t i = 0; i < FCN_L1_OUT; i++) 
+    {
+        int32_t b_q = float_to_q(FCN_L1_b[i], frac_bits_acc);
+        fprintf(fpwb, "%x\n", b_q);
+    }
+
+    for (uint32_t i = 0; i < FCN_L2_OUT; i++) 
+    {
+        for (uint32_t j = 0; j < FCN_L2_IN; j++) 
+        {
+            int32_t w_q = float_to_q(FCN_L2_W[i][j], frac_bits_wt);       // Q1.1.14
+            fprintf(fpwb, "%x\n", w_q);
+        }
+    }
+
+    for (uint32_t i = 0; i < FCN_L2_OUT; i++) 
+    {
+        int32_t b_q = float_to_q(FCN_L2_b[i], frac_bits_acc);
+        fprintf(fpwb, "%x\n", b_q);
+    }
+
+    for (uint32_t i = 0; i < 1; i++) 
+    {
+        for (uint32_t j = 0; j < FCN_L2_OUT; j++) 
+        {
+            int32_t w_q = float_to_q(FCN_OUT_W[i][j], frac_bits_wt);       // Q1.1.14
+            fprintf(fpwb, "%x\n", w_q);
+        }
+    }
+    for (uint32_t i = 0; i < 1; i++) 
+    {
+        int32_t b_q = float_to_q(FCN_OUT_b[i], frac_bits_acc);
+        fprintf(fpwb, "%x\n", b_q);
+    }
+}
+
+// Helper: convert float -> signed integer with saturation using frac_bits
+static inline int64_t float_to_q_sat64(float v, int frac_bits, int out_bits)
+{
+    int64_t scale = (int64_t)1 << frac_bits;
+    int64_t tmp = llroundf((double)v * (double)scale);
+    int64_t minv = - (1LL << (out_bits - 1));
+    int64_t maxv =   (1LL << (out_bits - 1)) - 1;
+    if (tmp < minv) tmp = minv;
+    if (tmp > maxv) tmp = maxv;
+    return tmp;
+}
+
+// Helper: produce two's complement hex string for given signed integer and bitwidth
+// Writes into buf (must be large enough). Returns pointer to buf.
+static inline char *to_twos_hex(char *buf, int64_t value, int bits)
+{
+    uint64_t u;
+    if (value < 0) {
+        // two's complement
+        u = ((uint64_t)1 << bits) + (uint64_t)value;
+    } else {
+        u = (uint64_t)value;
+    }
+    // hex digits required
+    int hexlen = (bits + 3) / 4;
+    // format as hex with leading zeros, e.g. 16'h00ab
+    // We'll return just the hex digits (without 0x) because we'll produce "16'hhhhh"
+    // Write into buf
+    // snprintf width: hexlen characters
+    char fmt[16];
+    snprintf(fmt, sizeof(fmt), "%%0%dx", hexlen);
+    snprintf(buf, hexlen + 1 + 2, fmt, (unsigned int)u);
+    return buf;
+}
+
+// The function that writes the verilog file using arrays linked into your program.
+// It expects these symbols to exist (they come from soc_fcn_weights.h):
+//   float FCN_L1_W[NEURONS_LAYER_1][NUM_INPUTS];
+//   float FCN_L1_b[NEURONS_LAYER_1];
+//   float FCN_L2_W[NEURONS_LAYER_2][NEURONS_LAYER_1];
+//   float FCN_L2_b[NEURONS_LAYER_2];
+//   float FCN_OUT_W[NUM_OUTPUTS][NEURONS_LAYER_2];
+//   float FCN_OUT_b[NUM_OUTPUTS];
+//
+// If your symbols are named differently, adjust the names below.
+void emit_verilog_mem_from_c(const char *out_path)
+{
+    FILE *vf = fopen(out_path, "w");
+    if (!vf) {
+        perror(out_path);
+        return;
+    }
+
+    // Fixed-point config (match code comments in this file)
+    const int wt_bits = 16;  // weights stored as signed 16-bit (Q1.1.14)
+    const int wt_frac = 14;
+    const int b_bits  = 32;  // biases stored as signed 32-bit (Q1.3.27)
+    const int b_frac  = 27;
+
+    // Write header & module
+    fprintf(vf, "// Auto-generated by FCN.c at runtime\n");
+    fprintf(vf, "// Module containing ROM initializations (weights and biases)\n\n");
+
+    fprintf(vf,
+        "module fcn_weights_mem_from_c (\n"
+        "    // read-only memories (flattened row-major)\n"
+        "    output logic [%d:0] dummy // placeholder to avoid empty port list\n"
+        ");\n\n", 0);
+
+    // L1 weights (NEURONS_LAYER_1 x NUM_INPUTS)
+    fprintf(vf, "// L1 weights: %d x %d -> %d-bit fixed (Q1.1.14)\n",
+            NEURONS_LAYER_1, NUM_INPUTS, wt_bits);
+    fprintf(vf, "localparam L1_W_DEPTH = %d;\n", NEURONS_LAYER_1 * NUM_INPUTS);
+    fprintf(vf, "reg signed [%d:0] mem_l1_w [0:L1_W_DEPTH-1];\n\n", wt_bits-1);
+
+    // L1 biases
+    fprintf(vf, "// L1 biases: %d -> %d-bit fixed (Q1.3.27)\n", NEURONS_LAYER_1, b_bits);
+    fprintf(vf, "reg signed [%d:0] mem_l1_b [0:%d-1];\n\n", b_bits-1, NEURONS_LAYER_1);
+
+    // L2 weights
+    fprintf(vf, "// L2 weights: %d x %d -> %d-bit fixed (Q1.1.14)\n",
+            NEURONS_LAYER_2, NEURONS_LAYER_1, wt_bits);
+    fprintf(vf, "localparam L2_W_DEPTH = %d;\n", NEURONS_LAYER_2 * NEURONS_LAYER_1);
+    fprintf(vf, "reg signed [%d:0] mem_l2_w [0:L2_W_DEPTH-1];\n\n", wt_bits-1);
+
+    // L2 biases
+    fprintf(vf, "// L2 biases: %d -> %d-bit fixed (Q1.3.27)\n", NEURONS_LAYER_2, b_bits);
+    fprintf(vf, "reg signed [%d:0] mem_l2_b [0:%d-1];\n\n", b_bits-1, NEURONS_LAYER_2);
+
+    // OUT weights
+    fprintf(vf, "// OUT weights: %d x %d -> %d-bit fixed (Q1.1.14)\n",
+            NUM_OUTPUTS, NEURONS_LAYER_2, wt_bits);
+    fprintf(vf, "localparam OUT_W_DEPTH = %d;\n", NUM_OUTPUTS * NEURONS_LAYER_2);
+    fprintf(vf, "reg signed [%d:0] mem_out_w [0:OUT_W_DEPTH-1];\n\n", wt_bits-1);
+
+    // OUT biases
+    fprintf(vf, "// OUT biases: %d -> %d-bit fixed (Q1.3.27)\n", NUM_OUTPUTS, b_bits);
+    fprintf(vf, "reg signed [%d:0] mem_out_b [0:%d-1];\n\n", b_bits-1, NUM_OUTPUTS);
+
+    // Begin initial block with inline hex values
+    fprintf(vf, "initial begin\n");
+
+    // Helper buffers for hex strings
+    char hexbuf[40];
+
+    // --- emit L1 weights (flatten row-major: neuron * NUM_INPUTS + input) ---
+    for (int n = 0; n < NEURONS_LAYER_1; ++n) {
+        for (int j = 0; j < NUM_INPUTS; ++j) {
+            float val = FCN_L1_W[n][j];
+            int64_t q = float_to_q_sat64(val, wt_frac, wt_bits);
+            to_twos_hex(hexbuf, q, wt_bits);
+            fprintf(vf, "    mem_l1_w[%d] = %d'h%s;\n", n * NUM_INPUTS + j, wt_bits, hexbuf);
+        }
+    }
+    fprintf(vf, "\n");
+
+    // --- emit L1 biases ---
+    for (int n = 0; n < NEURONS_LAYER_1; ++n) {
+        float val = FCN_L1_b[n];
+        int64_t q = float_to_q_sat64(val, b_frac, b_bits);
+        to_twos_hex(hexbuf, q, b_bits);
+        fprintf(vf, "    mem_l1_b[%d] = %d'h%s;\n", n, b_bits, hexbuf);
+    }
+    fprintf(vf, "\n");
+
+    // --- emit L2 weights ---
+    for (int n = 0; n < NEURONS_LAYER_2; ++n) {
+        for (int j = 0; j < NEURONS_LAYER_1; ++j) {
+            float val = FCN_L2_W[n][j];
+            int64_t q = float_to_q_sat64(val, wt_frac, wt_bits);
+            to_twos_hex(hexbuf, q, wt_bits);
+            fprintf(vf, "    mem_l2_w[%d] = %d'h%s;\n", n * NEURONS_LAYER_1 + j, wt_bits, hexbuf);
+        }
+    }
+    fprintf(vf, "\n");
+
+    // --- emit L2 biases ---
+    for (int n = 0; n < NEURONS_LAYER_2; ++n) {
+        float val = FCN_L2_b[n];
+        int64_t q = float_to_q_sat64(val, b_frac, b_bits);
+        to_twos_hex(hexbuf, q, b_bits);
+        fprintf(vf, "    mem_l2_b[%d] = %d'h%s;\n", n, b_bits, hexbuf);
+    }
+    fprintf(vf, "\n");
+
+    // --- emit OUT weights ---
+    for (int n = 0; n < NUM_OUTPUTS; ++n) {
+        for (int j = 0; j < NEURONS_LAYER_2; ++j) {
+            float val = FCN_OUT_W[n][j];
+            int64_t q = float_to_q_sat64(val, wt_frac, wt_bits);
+            to_twos_hex(hexbuf, q, wt_bits);
+            fprintf(vf, "    mem_out_w[%d] = %d'h%s;\n", n * NEURONS_LAYER_2 + j, wt_bits, hexbuf);
+        }
+    }
+    fprintf(vf, "\n");
+
+    // --- emit OUT biases ---
+    for (int n = 0; n < NUM_OUTPUTS; ++n) {
+        float val = FCN_OUT_b[n];
+        int64_t q = float_to_q_sat64(val, b_frac, b_bits);
+        to_twos_hex(hexbuf, q, b_bits);
+        fprintf(vf, "    mem_out_b[%d] = %d'h%s;\n", n, b_bits, hexbuf);
+    }
+
+    fprintf(vf, "end\n\nendmodule\n");
+    fclose(vf);
+    printf("Wrote Verilog ROM file: %s\n", out_path);
+}
+
+/* -------------------------
+   mem emitter for $readmemh
+   Paste into FCN.c and call:
+     emit_mem_files_and_wrapper("fcn");
+   This writes:
+     fcn_l1_w.mem, fcn_l1_b.mem,
+     fcn_l2_w.mem, fcn_l2_b.mem,
+     fcn_out_w.mem, fcn_out_b.mem,
+     fcn_weights_mem.v
+   ------------------------- */
+
+/* --- CONFIG: fixed-point formats --- */
+#define WT_BITS  16   /* weights: signed 16-bit */
+#define WT_FRAC  14   /* Q1.1.14 */
+#define B_BITS   32   /* biases: signed 32-bit */
+#define B_FRAC   27   /* Q1.3.27 */
+
+/* NOTE:
+   This code expects these arrays (or equivalent) to be available in your C file:
+     float FCN_L1_W[NEURONS_LAYER_1][NUM_INPUTS];
+     float FCN_L1_b[NEURONS_LAYER_1];
+     float FCN_L2_W[NEURONS_LAYER_2][NEURONS_LAYER_1];
+     float FCN_L2_b[NEURONS_LAYER_2];
+     float FCN_OUT_W[NUM_OUTPUTS][NEURONS_LAYER_2];
+     float FCN_OUT_b[NUM_OUTPUTS];
+   and these macros:
+     NUM_INPUTS, NEURONS_LAYER_1, NEURONS_LAYER_2, NUM_OUTPUTS
+   Rename references below if your symbols are different.
+*/
+
+/* helper: convert float -> signed integer with saturation */
+
+
+/* helper: write unsigned hex line padded to hexlen chars (lowercase) */
+static void fprintf_hex_line(FILE *f, uint64_t u, int bits) {
+    int hexlen = (bits + 3) / 4;
+    /* width with leading zeros, lowercase hex */
+    fprintf(f, "%0*llx\n", hexlen, (unsigned long long)u);
+}
+
+/* convert signed two's complement integer to unsigned representation for hex */
+static uint64_t to_unsigned_twos(int64_t val, int bits) {
+    if (val < 0) {
+        uint64_t u = ((uint64_t)1 << bits) + (uint64_t)val;
+        return u;
+    } else {
+        return (uint64_t)val;
+    }
+}
+
+/* write a single mem file given float array pointer and dimensions */
+static int write_mem_flat_from_2d(const char *fname, const float *arr, size_t rows, size_t cols, int bits, int frac) {
+    FILE *f = fopen(fname, "w");
+    if (!f) {
+        perror(fname);
+        return -1;
+    }
+    size_t cnt = 0;
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+            float v = arr[r * cols + c];
+            int64_t q = float_to_q_sat64(v, frac, bits);
+            uint64_t u = to_unsigned_twos(q, bits);
+            fprintf_hex_line(f, u, bits);
+            ++cnt;
+        }
+    }
+    fclose(f);
+    /* optional: print count */
+    /* printf("Wrote %s (%zu entries)\n", fname, cnt); */
+    return 0;
+}
+
+/* write a single mem file from 1d float array */
+static int write_mem_flat_from_1d(const char *fname, const float *arr, size_t len, int bits, int frac) {
+    FILE *f = fopen(fname, "w");
+    if (!f) {
+        perror(fname);
+        return -1;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        float v = arr[i];
+        int64_t q = float_to_q_sat64(v, frac, bits);
+        uint64_t u = to_unsigned_twos(q, bits);
+        fprintf_hex_line(f, u, bits);
+    }
+    fclose(f);
+    return 0;
+}
+
+/* Main emitter:
+   prefix -> string placed in filenames, e.g. "fcn" gives fcn_l1_w.mem and fcn_weights_mem.v
+*/
+void emit_mem_files_and_wrapper(const char *prefix) {
+    char fname[256];
+    /* 1) L1 weights: NEURONS_LAYER_1 x NUM_INPUTS */
+    snprintf(fname, sizeof(fname), "%s_l1_w.mem", prefix);
+    /* FCN_L1_W is expected as 2D array: [NEURONS_LAYER_1][NUM_INPUTS]
+       We'll treat it as flattened row-major pointer.
+       Cast required because arr may be declared as float[][]; take address of first element.
+    */
+    if (write_mem_flat_from_2d(fname, &FCN_L1_W[0][0], (size_t)NEURONS_LAYER_1, (size_t)NUM_INPUTS, WT_BITS, WT_FRAC) != 0) {
+        fprintf(stderr, "Failed to write %s\n", fname);
+        return;
+    }
+
+    /* 2) L1 biases */
+    snprintf(fname, sizeof(fname), "%s_l1_b.mem", prefix);
+    if (write_mem_flat_from_1d(fname, &FCN_L1_b[0], (size_t)NEURONS_LAYER_1, B_BITS, B_FRAC) != 0) {
+        fprintf(stderr, "Failed to write %s\n", fname);
+        return;
+    }
+
+    /* 3) L2 weights: NEURONS_LAYER_2 x NEURONS_LAYER_1 */
+    snprintf(fname, sizeof(fname), "%s_l2_w.mem", prefix);
+    if (write_mem_flat_from_2d(fname, &FCN_L2_W[0][0], (size_t)NEURONS_LAYER_2, (size_t)NEURONS_LAYER_1, WT_BITS, WT_FRAC) != 0) {
+        fprintf(stderr, "Failed to write %s\n", fname);
+        return;
+    }
+
+    /* 4) L2 biases */
+    snprintf(fname, sizeof(fname), "%s_l2_b.mem", prefix);
+    if (write_mem_flat_from_1d(fname, &FCN_L2_b[0], (size_t)NEURONS_LAYER_2, B_BITS, B_FRAC) != 0) {
+        fprintf(stderr, "Failed to write %s\n", fname);
+        return;
+    }
+
+    /* 5) OUT weights: NUM_OUTPUTS x NEURONS_LAYER_2 */
+    snprintf(fname, sizeof(fname), "%s_out_w.mem", prefix);
+    if (write_mem_flat_from_2d(fname, &FCN_OUT_W[0][0], (size_t)NUM_OUTPUTS, (size_t)NEURONS_LAYER_2, WT_BITS, WT_FRAC) != 0) {
+        fprintf(stderr, "Failed to write %s\n", fname);
+        return;
+    }
+
+    /* 6) OUT biases */
+    snprintf(fname, sizeof(fname), "%s_out_b.mem", prefix);
+    if (write_mem_flat_from_1d(fname, &FCN_OUT_b[0], (size_t)NUM_OUTPUTS, B_BITS, B_FRAC) != 0) {
+        fprintf(stderr, "Failed to write %s\n", fname);
+        return;
+    }
+
+    /* 7) Emit small Verilog wrapper using $readmemh */
+    snprintf(fname, sizeof(fname), "%s_weights_mem.v", prefix);
+    FILE *vf = fopen(fname, "w");
+    if (!vf) {
+        perror(fname);
+        return;
+    }
+
+    /* Prepare sizes as numbers for Verilog */
+    int L1_W_DEPTH = NEURONS_LAYER_1 * NUM_INPUTS;
+    int L2_W_DEPTH = NEURONS_LAYER_2 * NEURONS_LAYER_1;
+    int OUT_W_DEPTH = NUM_OUTPUTS * NEURONS_LAYER_2;
+
+    fprintf(vf, "// Auto-generated wrapper to load mem files using $readmemh\n");
+    fprintf(vf, "// Generated by emit_mem_files_and_wrapper in FCN.c\n\n");
+
+    fprintf(vf, "`timescale 1ns/1ps\n");
+    fprintf(vf, "module %s_weights_mem #(\n", prefix);
+    fprintf(vf, "    parameter NUM_INPUTS = %d,\n", NUM_INPUTS);
+    fprintf(vf, "    parameter NEURONS_L1 = %d,\n", NEURONS_LAYER_1);
+    fprintf(vf, "    parameter NEURONS_L2 = %d,\n", NEURONS_LAYER_2);
+    fprintf(vf, "    parameter NUM_OUTPUTS = %d,\n", NUM_OUTPUTS);
+    fprintf(vf, "    parameter WEIGHT_WIDTH = %d,\n", WT_BITS);
+    fprintf(vf, "    parameter BIAS_WIDTH = %d\n", B_BITS);
+    fprintf(vf, ") (\n");
+    fprintf(vf, "    input  wire [$clog2(NEURONS_L1*NUM_INPUTS)-1:0] addr_l1_w,\n");
+    fprintf(vf, "    output wire signed [WEIGHT_WIDTH-1:0] dout_l1_w,\n\n");
+
+    fprintf(vf, "    input  wire [$clog2(NEURONS_L1)-1:0] addr_l1_b,\n");
+    fprintf(vf, "    output wire signed [BIAS_WIDTH-1:0] dout_l1_b,\n\n");
+
+    fprintf(vf, "    input  wire [$clog2(NEURONS_L2*NEURONS_L1)-1:0] addr_l2_w,\n");
+    fprintf(vf, "    output wire signed [WEIGHT_WIDTH-1:0] dout_l2_w,\n\n");
+
+    fprintf(vf, "    input  wire [$clog2(NEURONS_L2)-1:0] addr_l2_b,\n");
+    fprintf(vf, "    output wire signed [BIAS_WIDTH-1:0] dout_l2_b,\n\n");
+
+    fprintf(vf, "    input  wire [$clog2(NUM_OUTPUTS*NEURONS_L2)-1:0] addr_out_w,\n");
+    fprintf(vf, "    output wire signed [WEIGHT_WIDTH-1:0] dout_out_w,\n\n");
+
+    fprintf(vf, "    input  wire [$clog2(NUM_OUTPUTS)-1:0] addr_out_b,\n");
+    fprintf(vf, "    output wire signed [BIAS_WIDTH-1:0] dout_out_b\n");
+    fprintf(vf, ");\n\n");
+
+    /* declare memories */
+    fprintf(vf, "    // Depths\n");
+    fprintf(vf, "    localparam L1_W_DEPTH = %d;\n", L1_W_DEPTH);
+    fprintf(vf, "    localparam L2_W_DEPTH = %d;\n", L2_W_DEPTH);
+    fprintf(vf, "    localparam OUT_W_DEPTH = %d;\n\n", OUT_W_DEPTH);
+
+    fprintf(vf, "    // memories\n");
+    fprintf(vf, "    reg signed [WEIGHT_WIDTH-1:0] mem_l1_w [0:L1_W_DEPTH-1];\n");
+    fprintf(vf, "    reg signed [BIAS_WIDTH-1:0]   mem_l1_b [0:NEURONS_L1-1];\n\n");
+
+    fprintf(vf, "    reg signed [WEIGHT_WIDTH-1:0] mem_l2_w [0:L2_W_DEPTH-1];\n");
+    fprintf(vf, "    reg signed [BIAS_WIDTH-1:0]   mem_l2_b [0:NEURONS_L2-1];\n\n");
+
+    fprintf(vf, "    reg signed [WEIGHT_WIDTH-1:0] mem_out_w [0:OUT_W_DEPTH-1];\n");
+    fprintf(vf, "    reg signed [BIAS_WIDTH-1:0]   mem_out_b [0:NUM_OUTPUTS-1];\n\n");
+
+    fprintf(vf, "    initial begin\n");
+    fprintf(vf, "        // load weights/biases from mem files (hex, two's complement)\n");
+    fprintf(vf, "        $readmemh(\"%s_l1_w.mem\", mem_l1_w);\n", prefix);
+    fprintf(vf, "        $readmemh(\"%s_l1_b.mem\", mem_l1_b);\n", prefix);
+    fprintf(vf, "        $readmemh(\"%s_l2_w.mem\", mem_l2_w);\n", prefix);
+    fprintf(vf, "        $readmemh(\"%s_l2_b.mem\", mem_l2_b);\n", prefix);
+    fprintf(vf, "        $readmemh(\"%s_out_w.mem\", mem_out_w);\n", prefix);
+    fprintf(vf, "        $readmemh(\"%s_out_b.mem\", mem_out_b);\n", prefix);
+    fprintf(vf, "    end\n\n");
+
+    /* combinational read outputs */
+    fprintf(vf, "    assign dout_l1_w  = mem_l1_w[addr_l1_w];\n");
+    fprintf(vf, "    assign dout_l1_b  = mem_l1_b[addr_l1_b];\n\n");
+
+    fprintf(vf, "    assign dout_l2_w  = mem_l2_w[addr_l2_w];\n");
+    fprintf(vf, "    assign dout_l2_b  = mem_l2_b[addr_l2_b];\n\n");
+
+    fprintf(vf, "    assign dout_out_w = mem_out_w[addr_out_w];\n");
+    fprintf(vf, "    assign dout_out_b = mem_out_b[addr_out_b];\n\n");
+
+    fprintf(vf, "endmodule\n");
+    fclose(vf);
+
+    printf("Wrote mem files and Verilog wrapper with prefix '%s_'\n", prefix);
+    printf(" - %s_l1_w.mem  (%d entries)\n", prefix, L1_W_DEPTH);
+    printf(" - %s_l1_b.mem  (%d entries)\n", prefix, NEURONS_LAYER_1);
+    printf(" - %s_l2_w.mem  (%d entries)\n", prefix, L2_W_DEPTH);
+    printf(" - %s_l2_b.mem  (%d entries)\n", prefix, NEURONS_LAYER_2);
+    printf(" - %s_out_w.mem (%d entries)\n", prefix, OUT_W_DEPTH);
+    printf(" - %s_out_b.mem (%d entries)\n", prefix, NUM_OUTPUTS);
+    printf(" - %s_weights_mem.v\n", prefix);
+}
+
+/* -------------------------
+   Usage:
+   1) Insert this code into FCN.c
+   2) At the end of main(), after arrays are available, call:
+        emit_mem_files_and_wrapper(\"fcn\");
+   3) Rebuild and run your program:
+        gcc -std=c11 -O2 -o fcn_run FCN.c -lm
+        ./fcn_run
+   4) You will get mem files and fcn_weights_mem.v in the working dir.
+   ------------------------- */
+
 /*
 void CnnForwardPass (const float *input, const FeedForwardNN *nn, float *output_scalar)
 {
@@ -245,22 +721,51 @@ void DnnForwardPass (const float *input, float *output_scalar, int32_t *output)
 
     int32_t layer_1_i[NEURONS_LAYER_1];
     int32_t layer_2_i[NEURONS_LAYER_2];
+    
+    const int frac_bits_in  = 13;
+    const int frac_bits_wt  = 14;
 
-    fcn_layer(input,  &FCN_L1_W[0][0], FCN_L1_b,
+    int32_t input_q[NUM_INPUTS];
+    for (uint32_t j = 0; j < NUM_INPUTS; ++j) {
+        input_q[j] = float_to_q(input[j], frac_bits_in);
+    }
+
+    fcn_layer(input, input_q, &FCN_L1_W[0][0], FCN_L1_b,
               NEURONS_LAYER_1, NUM_INPUTS, layer_1, layer_1_i, /*ReLU*/1);
+    
+    for (uint32_t j = 0; j < NEURONS_LAYER_1; ++j) {
+        layer_1_i[j] = layer_1_i[j] >> frac_bits_wt; // adjust Q format for next layer input
+    }
 
-    fcn_layer(layer_1, &FCN_L2_W[0][0], FCN_L2_b,
+    fcn_layer(layer_1, layer_1_i, &FCN_L2_W[0][0], FCN_L2_b,
               NEURONS_LAYER_2, NEURONS_LAYER_1, layer_2, layer_2_i,/*ReLU*/1);
+
+    for (uint32_t j = 0; j < NEURONS_LAYER_2; ++j) {
+        layer_2_i[j] = layer_2_i[j] >> frac_bits_wt; // adjust Q format for next layer input
+    }
 
     float out1[NUM_OUTPUTS];
     int32_t out1_i[NUM_OUTPUTS];
 
-    fcn_layer(layer_2, &FCN_OUT_W[0][0], FCN_OUT_b,
+    fcn_layer(layer_2, layer_2_i, &FCN_OUT_W[0][0], FCN_OUT_b,
               NUM_OUTPUTS, NEURONS_LAYER_2, out1, out1_i, /*ReLU*/0);   // <-- linear
     
     *output_scalar = out1[0];
     *output = out1_i[0];
 }
+
+// ----------------------
+// Call emitter at the end of main()
+// ----------------------
+// In main(), after creating predictions.csv and before exiting, add:
+//
+//    emit_verilog_mem_from_c(\"fcn_weights_mem.v\");
+//
+// This will create 'fcn_weights_mem.v' in the working directory.
+//
+// Example: modify the bottom of main() to call it before return 0.
+// (If you want to always emit only for debug builds, guard with a compile-time define.)
+//
 
 // Example usage
 int main() 
@@ -271,6 +776,10 @@ int main()
     float input[NUM_INPUTS];
     FILE *fp = fopen("predictions.csv", "w");
     if (!fp) { perror("predictions.csv"); return 1; }
+
+    fpwb = fopen("fixed_point_weights_biases.csv", "w");
+    if (!fpwb) { perror("fixed_point_weights_biases.csv"); return 1; }
+
     float acc_error = 0.0f;
     float error = 0.0f;
 
@@ -300,6 +809,11 @@ int main()
     }
 
     printf("Average absolute error: %.6f\n", acc_error / ROW_COUNT);
+
+    export_weights_biases();
+    emit_verilog_mem_from_c("fcn_weights_mem.v");
+    emit_mem_files_and_wrapper("fcn");
+
     fclose(fp);
     //printf("Max input: %f, Min input: %f\n", max_input, min_input);
     //printf("Max weight: %f, Min weight: %f\n", max_weight, min_weight);
