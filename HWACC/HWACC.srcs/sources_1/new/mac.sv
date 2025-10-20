@@ -45,8 +45,8 @@ module mac
     localparam BIAS_DEPTH = (NEURONS_L1 + NEURONS_L2 + 8) / 8;
     
     // memories
-    logic signed [WEIGHT_WIDTH-1:0] mem_w [0:WEIGHT_DEPTH-1][0:BATCH_SIZE-1];
-    logic signed [BIAS_WIDTH-1:0] mem_b [0:BIAS_DEPTH-1][0:BATCH_SIZE-1];
+    logic signed [0:BATCH_SIZE-1][WEIGHT_WIDTH-1:0] mem_w [0:WEIGHT_DEPTH-1];
+    logic signed [0:BATCH_SIZE-1][BIAS_WIDTH-1:0] mem_b [0:BIAS_DEPTH-1];
     logic signed [BIAS_WIDTH-1:0] acc [0:BATCH_SIZE-1]; // 8 accumalators 
 
     initial begin
@@ -90,11 +90,8 @@ module mac
                 end
                 S_INIT_BIAS_L1:
                 begin
-                    //for (logic [2:0] i = 0; i < 8; i++) 
-                    //begin
-                        
-                    //end
-                    //state <= S_COMPUTE_L1;
+                    foreach (acc[i]) acc[i] <= mem_b[bias_addr][i];
+                    state <= S_COMPUTE_L1;
                 end
                 S_COMPUTE_L1:
                 begin
