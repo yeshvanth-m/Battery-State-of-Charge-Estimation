@@ -67,7 +67,8 @@ module mac_tb;
         end
 
         $display("\n----- MAC Testbench End -----");
-        #20;
+        
+        #100;
         $finish;
     end
 
