@@ -7,6 +7,7 @@
 #include "soc_fcn_weights.h"
 #include "scaler_with_rows.h"
 #include <inttypes.h>
+#include <stdbool.h>
 
 #define NUM_INPUTS          5
 #define NEURONS_LAYER_1     128
@@ -26,7 +27,7 @@ typedef struct
 } FeedForwardNN;
 
 FILE *fpwb;
-
+bool debug_dnn = false;
 /*
 FeedForwardNN FCN = 
 {
@@ -197,6 +198,7 @@ void fcn_layer(const float *input,
         // initialize accumulator in 64-bit using bias (Q1.3.27)
         int32_t acc = bias_q;
 
+        if (debug_dnn && i < 16) printf(" \nNeuron %2d: Bias Q: %08x\n", i, (uint32_t)bias_q);
         // For each input: multiply input_q (Q1.2.13) * weight_q (Q1.1.14)
         // product has frac_bits = 13 + 14 = 27 -> already aligned with acc Q1.3.27
         for (uint32_t j = 0; j < input_size; j++) 
@@ -205,6 +207,9 @@ void fcn_layer(const float *input,
             // multiply in 64-bit to avoid overflow: (int64_t) * (int64_t)
             int32_t prod = (int32_t)(input_q[j] * w_q);    // result is Q1.3.27
             acc += prod;
+
+            if (debug_dnn && i < 16) printf("   Input[%2d]: %04x, Weight[%2d]: %04x, Product: %08x, Acc: %08x\n", 
+                   j, (uint16_t)input_q[j], j, (uint16_t)w_q, (uint32_t)prod, (uint32_t)acc);
         }
         
         if (acc > max_acc) max_acc = (int32_t)acc;
@@ -548,28 +553,44 @@ void DnnForwardPass (const float *input, float *output_scalar, int32_t *output)
         input_q[j] = (int16_t)float_to_q(input[j], frac_bits_in);
     }
 
+    printf("Inputs: %04x, %04x, %04x, %04x, %04x\n", (uint16_t)input_q[0], (uint16_t)input_q[1], (uint16_t)input_q[2], (uint16_t)input_q[3], (uint16_t)input_q[4]);
+
+    //debug_dnn = true;
     fcn_layer(input, input_q, &FCN_L1_W[0][0], FCN_L1_b,
               NEURONS_LAYER_1, NUM_INPUTS, layer_1, layer_1_i, /*ReLU*/1);
-    
+    //debug_dnn = false;
+
+    printf("Layer 1 outputs:\n");
     for (uint32_t j = 0; j < NEURONS_LAYER_1; ++j) {
         layer_1_o[j] = q14_27_to_q2_13_safe(layer_1_i[j]); // adjust Q format for next layer input
+        if (j < 16) {
+            //printf("Neuron %d Hex: %04x ", j, (uint16_t)layer_1_o[j]);
+            //printf("Neuron %d Float: %6f \n", j, layer_1[j]);
+        }
     }
 
+    //debug_dnn = true;
     fcn_layer(layer_1, layer_1_o, &FCN_L2_W[0][0], FCN_L2_b,
               NEURONS_LAYER_2, NEURONS_LAYER_1, layer_2, layer_2_i,/*ReLU*/1);
-
+    //debug_dnn = false;
+    
+    printf("Layer 2 outputs:\n");
     for (uint32_t j = 0; j < NEURONS_LAYER_2; ++j) {
         layer_2_o[j] = q14_27_to_q2_13_safe(layer_2_i[j]); // adjust Q format for next layer input
+        printf("Neuron %d Hex: %04x ", j, (uint16_t)layer_2_o[j]);
+        printf("Neuron %d Float: %6f \n", j, layer_2[j]);
     }
 
     float out1[NUM_OUTPUTS];
     int32_t out1_i[NUM_OUTPUTS];
 
+    debug_dnn = true;
     fcn_layer(layer_2, layer_2_o, &FCN_OUT_W[0][0], FCN_OUT_b,
               NUM_OUTPUTS, NEURONS_LAYER_2, out1, out1_i, /*ReLU*/0);   // <-- linear
     
     *output_scalar = out1[0];
     *output = out1_i[0];
+    //printf("%04x ", (uint16_t)out1_i[0]);
 }
 
 // ----------------------
@@ -598,9 +619,9 @@ int main()
     float acc_error = 0.0f;
     float error = 0.0f;
 
-    for (uint32_t i = 0; i < ROW_COUNT; i++) 
-    {
-        //uint32_t i = 0;
+    //for (uint32_t i = 0; i < ROW_COUNT; i++) 
+    //{
+        uint32_t i = 0;
         output = 0.0;
         output_i = 0;
         //memcpy(&input, &test_inputs[i], sizeof(test_inputs[i]));
@@ -615,23 +636,23 @@ int main()
         input[4] = row[7]; // Cum Capacity
         //CnnForwardPass(input, &FCN, &output);
         DnnForwardPass(input, &output, &output_i);
-        //printf("Output: %f\n", output);
-        //printf("Output (fixed Q1.3.27): %d -> %f\n", output_i, q_to_float(output_i, 27));
+        printf("Output: %f\n", output);
+        printf("Output (fixed Q1.3.27): %d -> %f\n", output_i, q_to_float(output_i, 27));
         error = fabsf(output - q_to_float(output_i, 27));
         acc_error += error;
         // write one CSV row
         fprintf(fp, "%.6f, %.6f, %.6f\n", output, q_to_float(output_i, 27), error);
-    }
+    //}
 
-    printf("Average absolute error: %.6f\n", acc_error / ROW_COUNT);
+    //printf("Average absolute error: %.6f\n", acc_error / ROW_COUNT);
 
     emit_mem_files_and_wrapper("fcn");
 
     fclose(fp);
-    printf("Max input: %f, Min input: %f\n", max_input, min_input);
-    printf("Max weight: %f, Min weight: %f\n", max_weight, min_weight);
-    printf("Max bias: %f, Min bias: %f\n", max_bias, min_bias);
-    printf("Max acc: %.6f, Min acc: %.6f\n", q_to_float(max_acc, 27), q_to_float(min_acc, 27));
+    //printf("Max input: %f, Min input: %f\n", max_input, min_input);
+    //printf("Max weight: %f, Min weight: %f\n", max_weight, min_weight);
+    //printf("Max bias: %f, Min bias: %f\n", max_bias, min_bias);
+    //printf("Max acc: %.6f, Min acc: %.6f\n", q_to_float(max_acc, 27), q_to_float(min_acc, 27));
     
     return 0;
 }

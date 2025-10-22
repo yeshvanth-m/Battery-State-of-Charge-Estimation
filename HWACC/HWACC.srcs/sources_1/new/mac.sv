@@ -19,7 +19,6 @@
 // 
 //////////////////////////////////////////////////////////////////////////////////
 
-
 module mac
 #(
     parameter NUM_INPUTS = 5,
@@ -52,7 +51,8 @@ module mac
     logic signed [BIAS_WIDTH-1:0]   acc_comb [0:BATCH_SIZE-1]; // 8 accumalators
     logic signed [IN_WIDTH-1:0]     mac_op_1 [0:BATCH_SIZE-1]; // 8 accumalators
     logic signed [WEIGHT_WIDTH-1:0] mac_op_2 [0:BATCH_SIZE-1]; // 8 accumalators
-    logic signed [IN_WIDTH-1:0]     out_buf  [0:NEURONS_L1-1];
+    logic signed [IN_WIDTH-1:0]     out_buf_l1  [0:NEURONS_L1-1];
+    logic signed [IN_WIDTH-1:0]     out_buf_l2  [0:NEURONS_L2-1];
 
     logic signed [0:NUM_INPUTS-1][15:0] in;
     initial begin
@@ -82,7 +82,7 @@ module mac
     state_t state;
     var logic [$clog2(BIAS_DEPTH)-1:0]   bias_addr;
     var logic [$clog2(WEIGHT_DEPTH)-1:0] weight_addr;
-    var logic [2:0] in_addr;
+    var logic [$clog2(NEURONS_L1):0] in_addr;
     var logic [$clog2(NEURONS_L1)-1:0] out_buf_addr;
     
     // 8 MACs, combinatorialy defined
@@ -138,23 +138,101 @@ module mac
                             acc_ff[i]   <= acc_comb[i];
                         end
                         in_addr++;
+                        weight_addr++;
                     end
                     else
                     begin
-                        if (weight_addr < L1_W_DEPTH)
-                        begin
-                            in_addr <= 0;
+                        in_addr <= 0;
+                        if (weight_addr < L1_W_DEPTH) 
                             state <= S_INIT_BIAS_L1;
+                        else 
+                            state <= S_INIT_BIAS_L2;
+                        foreach (acc_comb[i])
+                        begin
+                            out_buf_l1[out_buf_addr + i] <= (acc_comb[i] > 0) ? ((acc_comb[i] + (1 << 13)) >> 14) : 0;
+                        end
+                        out_buf_addr <= out_buf_addr + 8;
+                    end 
+                end
+                S_INIT_BIAS_L2:
+                begin
+                    state <= S_COMPUTE_L2;
+                    foreach (acc_ff[i])
+                    begin 
+                        mac_op_1[i] <= out_buf_l1[in_addr];
+                        mac_op_2[i] <= mem_w[weight_addr][i];
+                        acc_ff[i]   <= mem_b[bias_addr][i];
+                    end
+                    in_addr++;
+                    weight_addr++;
+                    bias_addr++;
+                end
+                S_COMPUTE_L2:
+                begin
+                    if (in_addr < NEURONS_L1)
+                    begin
+                        foreach (mac_op_1[i])
+                        begin
+                            mac_op_1[i] <= out_buf_l1[in_addr];
+                            mac_op_2[i] <= mem_w[weight_addr][i];
+                            acc_ff[i]   <= acc_comb[i];
+                        end
+                        in_addr++;
+                        weight_addr++;
+                    end
+                    else
+                    begin
+                        in_addr <= 0;
+                        if (weight_addr < L2_W_DEPTH) 
+                            state <= S_INIT_BIAS_L2;
+                        else 
+                            state <= S_OUTPUT_LAYER;
+                        foreach (acc_comb[i])
+                        begin
+                            out_buf_l2[out_buf_addr + i] <= (acc_comb[i] > 0) ? ((acc_comb[i] + (1 << 13)) >> 14) : 0;
+                            //acc_ff[i] <= 0;
+                        end
+                        out_buf_addr <= out_buf_addr + 8;
+                    end 
+                end
+                S_OUTPUT_LAYER:
+                begin
+                    if (in_addr < NEURONS_L2)
+                    begin
+                        foreach (mac_op_1[i])
+                        begin
+                            mac_op_1[i] <= out_buf_l2[in_addr + i];
+                            mac_op_2[i] <= mem_w[weight_addr][i];
+                            acc_ff[i] <= in_addr > 0 ? acc_comb[i] : 0;
+                        end
+                        in_addr <= in_addr + 8;
+                        weight_addr++;
+                        out_buf_addr <= 1;
+                    end
+                    else
+                    begin
+                        if (out_buf_addr < BATCH_SIZE)
+                        begin
+                            if (weight_addr == 1112)
+                            begin
+                                foreach (acc_ff[i])
+                                    acc_ff[i] <= acc_comb[i];
+                                    weight_addr <= 0;
+                            end
+                            else
+                            begin
+                                acc_ff[0] <= acc_ff[0] + acc_ff[out_buf_addr];
+                                out_buf_addr++;
+                            end
                         end
                         else
                         begin
-                            state <= S_INIT_BIAS_L2;
+                            acc_ff[0] <= acc_ff[0] + mem_b[bias_addr][0];
+                            state <= S_IDLE;
+                            done <= 1;
                         end
-                        foreach (acc_ff[i]) out_buf[out_buf_addr + i] <= (acc_ff[i] >> 14);
-                        out_buf_addr <= out_buf_addr + 8;
                     end
-                    weight_addr++; 
-            end
+                end
             endcase
         end
     end

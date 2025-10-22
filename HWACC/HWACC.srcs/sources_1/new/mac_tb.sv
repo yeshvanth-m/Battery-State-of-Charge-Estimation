@@ -18,8 +18,8 @@ module mac_tb;
 
     // Generate clock
     always #5 clk = ~clk;   // 100 MHz clock
-    
-    real weight_value, bias_value;
+    /*
+    //real weight_value, bias_value;
     
       // convert signed 16-bit fixed (two's complement) to real given frac bits
     function real fixed16_to_real(input logic [15:0] bits, input int frac);
@@ -33,7 +33,7 @@ module mac_tb;
       begin
         fixed32_to_real = $signed(bits) / (2.0 ** frac);
       end
-    endfunction
+    endfunction */
 
     initial begin
         $display("----- MAC Testbench Start -----");
@@ -51,7 +51,7 @@ module mac_tb;
 
         // Wait a little for initialization
         #50;
-
+        /*
         // Display a few memory contents
         $display("\n=== Weight Memory Preview ===");
         for (int j = 0; j < 1112; j++) begin
@@ -64,11 +64,12 @@ module mac_tb;
         $display("\n=== Bias Memory Preview ===");
         for (int i = 0; i < 4; i++) begin
             $display("mem_b[%0d] = %h", i, dut.mem_b[i][0]);
-        end
-
+        end */
+        
         $display("\n----- MAC Testbench End -----");
         
-        #100;
+        for (int i = 0; i < 80 + 120; i++)
+            #60;
         $finish;
     end
 
