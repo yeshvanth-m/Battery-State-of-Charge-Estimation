@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wave_config>
+   <wave_state>
+   </wave_state>
+   <db_ref_list>
+      <db_ref path="mac_tb_behav.wdb" id="1">
+         <top_modules>
+            <top_module name="glbl" />
+            <top_module name="mac_tb" />
+         </top_modules>
+      </db_ref>
+   </db_ref_list>
+   <zoom_setting>
+      <ZoomStartTime time="11,456.000 ns"></ZoomStartTime>
+      <ZoomEndTime time="11,547.001 ns"></ZoomEndTime>
+      <Cursor1Time time="12,090.000 ns"></Cursor1Time>
+   </zoom_setting>
+   <column_width_setting>
+      <NameColumnWidth column_width="151"></NameColumnWidth>
+      <ValueColumnWidth column_width="58"></ValueColumnWidth>
+   </column_width_setting>
+   <WVObjectSize size="16" />
+   <wvobject fp_name="/mac_tb/clk" type="logic">
+      <obj_property name="ElementShortName">clk</obj_property>
+      <obj_property name="ObjectShortName">clk</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/rst" type="logic">
+      <obj_property name="ElementShortName">rst</obj_property>
+      <obj_property name="ObjectShortName">rst</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/start" type="logic">
+      <obj_property name="ElementShortName">start</obj_property>
+      <obj_property name="ObjectShortName">start</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/done" type="logic">
+      <obj_property name="ElementShortName">done</obj_property>
+      <obj_property name="ObjectShortName">done</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/in_addr" type="array">
+      <obj_property name="ElementShortName">in_addr[7:0]</obj_property>
+      <obj_property name="ObjectShortName">in_addr[7:0]</obj_property>
+      <obj_property name="Radix">UNSIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/weight_addr" type="array">
+      <obj_property name="ElementShortName">weight_addr[10:0]</obj_property>
+      <obj_property name="ObjectShortName">weight_addr[10:0]</obj_property>
+      <obj_property name="Radix">UNSIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/bias_addr" type="array">
+      <obj_property name="ElementShortName">bias_addr[4:0]</obj_property>
+      <obj_property name="ObjectShortName">bias_addr[4:0]</obj_property>
+      <obj_property name="Radix">UNSIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/state" type="array">
+      <obj_property name="ElementShortName">state[2:0]</obj_property>
+      <obj_property name="ObjectShortName">state[2:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/acc_comb" type="array">
+      <obj_property name="ElementShortName">acc_comb[0:7][31:0]</obj_property>
+      <obj_property name="ObjectShortName">acc_comb[0:7][31:0]</obj_property>
+      <obj_property name="Radix">HEXRADIX</obj_property>
+      <obj_property name="isExpanded"></obj_property>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[0]" type="array">
+         <obj_property name="ElementShortName">[0][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[0][31:0]</obj_property>
+         <obj_property name="Radix">HEXRADIX</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[1]" type="array">
+         <obj_property name="ElementShortName">[1][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[1][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[2]" type="array">
+         <obj_property name="ElementShortName">[2][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[2][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[3]" type="array">
+         <obj_property name="ElementShortName">[3][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[3][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[4]" type="array">
+         <obj_property name="ElementShortName">[4][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[4][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[5]" type="array">
+         <obj_property name="ElementShortName">[5][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[5][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[6]" type="array">
+         <obj_property name="ElementShortName">[6][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[6][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_comb[7]" type="array">
+         <obj_property name="ElementShortName">[7][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[7][31:0]</obj_property>
+      </wvobject>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/acc_ff" type="array">
+      <obj_property name="ElementShortName">acc_ff[0:7][31:0]</obj_property>
+      <obj_property name="ObjectShortName">acc_ff[0:7][31:0]</obj_property>
+      <obj_property name="isExpanded"></obj_property>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[0]" type="array">
+         <obj_property name="ElementShortName">[0][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[0][31:0]</obj_property>
+         <obj_property name="Radix">UNSIGNEDDECRADIX</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[1]" type="array">
+         <obj_property name="ElementShortName">[1][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[1][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[2]" type="array">
+         <obj_property name="ElementShortName">[2][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[2][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[3]" type="array">
+         <obj_property name="ElementShortName">[3][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[3][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[4]" type="array">
+         <obj_property name="ElementShortName">[4][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[4][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[5]" type="array">
+         <obj_property name="ElementShortName">[5][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[5][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[6]" type="array">
+         <obj_property name="ElementShortName">[6][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[6][31:0]</obj_property>
+      </wvobject>
+      <wvobject fp_name="/mac_tb/dut/acc_ff[7]" type="array">
+         <obj_property name="ElementShortName">[7][31:0]</obj_property>
+         <obj_property name="ObjectShortName">[7][31:0]</obj_property>
+      </wvobject>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/in" type="array">
+      <obj_property name="ElementShortName">in[0:4][15:0]</obj_property>
+      <obj_property name="ObjectShortName">in[0:4][15:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/mac_op_1" type="array">
+      <obj_property name="ElementShortName">mac_op_1[0:7][15:0]</obj_property>
+      <obj_property name="ObjectShortName">mac_op_1[0:7][15:0]</obj_property>
+      <obj_property name="isExpanded"></obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/mac_op_2" type="array">
+      <obj_property name="ElementShortName">mac_op_2[0:7][15:0]</obj_property>
+      <obj_property name="ObjectShortName">mac_op_2[0:7][15:0]</obj_property>
+      <obj_property name="isExpanded"></obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/out_buf_l1" type="array">
+      <obj_property name="ElementShortName">out_buf_l1[0:127][15:0]</obj_property>
+      <obj_property name="ObjectShortName">out_buf_l1[0:127][15:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/out_buf_l2" type="array">
+      <obj_property name="ElementShortName">out_buf_l2[0:63][15:0]</obj_property>
+      <obj_property name="ObjectShortName">out_buf_l2[0:63][15:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/mac_tb/dut/out_buf_addr" type="array">
+      <obj_property name="ElementShortName">out_buf_addr[6:0]</obj_property>
+      <obj_property name="ObjectShortName">out_buf_addr[6:0]</obj_property>
+   </wvobject>
+</wave_config>
